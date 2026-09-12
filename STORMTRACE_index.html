@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>STORMTRACE</title>
+<style>
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#070b12;color:#fff;font-family:Arial,sans-serif}
+canvas{display:block;width:100%;height:100%;background:#101820}
+#ui{position:fixed;inset:0;pointer-events:none}
+.panel{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(92vw,560px);max-height:90vh;overflow:auto;background:rgba(7,11,18,.94);border:1px solid #3e5265;border-radius:18px;padding:22px;box-shadow:0 20px 70px #000b;pointer-events:auto}
+h1{font-size:42px;margin:0 0 4px;letter-spacing:5px}h2{margin:4px 0 16px}p{color:#b8c5d1;line-height:1.45}
+button{border:1px solid #53697b;background:#17222c;color:#fff;border-radius:12px;padding:12px 15px;font-weight:700;font-size:15px;margin:5px;cursor:pointer}
+button:hover{background:#21313f}.primary{background:#d9e7f2;color:#071018;border-color:#fff}
+.hidden{display:none!important}.top{position:absolute;left:12px;right:12px;top:10px;display:flex;justify-content:space-between;gap:8px;pointer-events:none}
+.hud{background:#071019d9;border:1px solid #506172;border-radius:12px;padding:8px 10px;font-size:13px;backdrop-filter:blur(5px)}
+#controls{position:absolute;bottom:16px;left:0;right:0;display:flex;justify-content:center;gap:10px;pointer-events:auto}
+.ctrl{width:78px;height:56px;font-size:13px;opacity:.92}.wide{width:105px}
+#radar{position:absolute;right:12px;top:60px;width:150px;height:150px;border:1px solid #9bb3c4;border-radius:50%;background:#071019cc;pointer-events:none}
+.small{font-size:12px;color:#9fb0bf}.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.card{border:1px solid #394b5a;border-radius:12px;padding:11px;background:#0d151e}.bar{height:8px;background:#27333e;border-radius:99px;overflow:hidden}.fill{height:100%;background:#dbe7ef;width:50%}
+#toast{position:absolute;bottom:92px;left:50%;transform:translateX(-50%);background:#071019ee;border:1px solid #657b8d;padding:9px 14px;border-radius:10px;opacity:0;transition:.2s}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="ui">
+  <div id="menu" class="panel">
+    <h1>STORMTRACE</h1><div class="small">SIDE-VIEW STORM CHASING</div>
+    <p>Drive through a living storm system, read the radar, deploy sensors, photograph tornadoes and earn money to improve your chase vehicle.</p>
+    <button class="primary" onclick="startGame()">START CHASE</button>
+    <button onclick="showPanel('garage')">GARAGE</button>
+    <button onclick="showPanel('missions')">MISSIONS</button>
+    <button onclick="showPanel('achievements')">ACHIEVEMENTS</button>
+    <button onclick="showPanel('settings')">SETTINGS</button>
+    <p class="small">Original game • no external libraries • progress saves locally.</p>
+  </div>
+
+  <div id="garage" class="panel hidden">
+    <h2>GARAGE</h2>
+    <div class="grid" id="garageCards"></div>
+    <button onclick="showPanel('menu')">BACK</button>
+  </div>
+
+  <div id="missions" class="panel hidden">
+    <h2>MISSIONS</h2><div id="missionList"></div>
+    <button onclick="showPanel('menu')">BACK</button>
+  </div>
+
+  <div id="achievements" class="panel hidden">
+    <h2>ACHIEVEMENTS</h2><div id="achievementList"></div>
+    <button onclick="showPanel('menu')">BACK</button>
+  </div>
+
+  <div id="settings" class="panel hidden">
+    <h2>SETTINGS</h2>
+    <button onclick="toggleRain()">Toggle Rain Effects</button>
+    <button onclick="resetSave()">RESET LOCAL SAVE</button>
+    <p class="small">Keyboard: W/↑ accelerate, S/↓ brake/reverse, Space stop. Mobile buttons appear during a chase. There is no left/right steering.</p>
+    <button onclick="showPanel('menu')">BACK</button>
+  </div>
+
+  <div id="hud" class="top hidden">
+    <div class="hud" id="stats"></div>
+    <div class="hud" id="objective"></div>
+    <div class="hud"><button onclick="toggleRadar()">RADAR</button><button onclick="photoMode()">PHOTO</button><button onclick="pauseGame()">PAUSE</button></div>
+  </div>
+  <canvas id="radar" class="hidden" width="150" height="150"></canvas>
+  <div id="controls" class="hidden">
+    <button class="ctrl" id="brake">BRAKE</button>
+    <button class="ctrl wide" id="accelerate">ACCELERATE</button>
+    <button class="ctrl" id="stop">STOP</button>
+    <button class="ctrl" id="sensor">SENSOR</button>
+  </div>
+  <div id="toast"></div>
+</div>
+
+<script>
+"use strict";
+const canvas=document.getElementById("game"),ctx=canvas.getContext("2d");
+const radar=document.getElementById("radar"),rx=radar.getContext("2d");
+let W=innerWidth,H=innerHeight,dpr=Math.min(devicePixelRatio||1,2);
+function resize(){W=innerWidth;H=innerHeight;canvas.width=W*dpr;canvas.height=H*dpr;ctx.setTransform(dpr,0,0,dpr,0,0)}
+addEventListener("resize",resize);resize();
+
+const KEY="stormtrace_save_v1";
+let save=JSON.parse(localStorage.getItem(KEY)||"null")||{
+ money:0,xp:0,level:1,upgrades:{engine:0,armor:0,sensor:0,film:0},ach:{},
+ completed:{distance:0,photos:0,sensors:0,tornadoes:0}
+};
+let game={running:false,paused:false,t=0,world:0,speed:0,fuel:100,damage:0,storm:0,wind:0,rain:true,radar:false,photoFlash:0,weather:0,spawn:0};
+const missions=[
+ ["FIRST TRACE","Travel 1200m",1200,"distance",250],
+ ["FIELD SENSOR","Deploy 3 sensors",3,"sensors",300],
+ ["EYE OF THE STORM","Photograph a tornado",1,"photos",500],
+ ["TWO THOUSAND","Travel 3000m",3000,"distance",700],
+ ["STORM HUNTER","Photograph 3 tornadoes",3,"tornadoes",1000]
+];
+const achievements=[
+ ["Road Trip","Travel 5000m","distance",5000,300],
+ ["Storm Watcher","Photograph 5 tornadoes","tornadoes",5,600],
+ ["Data Collector","Deploy 10 sensors","sensors",10,500],
+ ["Veteran Chaser","Reach level 5","level",5,1000]
+];
+
+function persist(){localStorage.setItem(KEY,JSON.stringify(save))}
+function toast(s){let e=document.getElementById("toast");e.textContent=s;e.style.opacity=1;clearTimeout(toast.x);toast.x=setTimeout(()=>e.style.opacity=0,1700)}
+function showPanel(id){
+ document.querySelectorAll(".panel").forEach(x=>x.classList.add("hidden"));
+ document.getElementById(id).classList.remove("hidden");
+ if(id==="garage")renderGarage();
+ if(id==="missions")renderMissions();
+ if(id==="achievements")renderAchievements();
+}
+function startGame(){
+ document.querySelectorAll(".panel").forEach(x=>x.classList.add("hidden"));
+ document.getElementById("hud").classList.remove("hidden");document.getElementById("controls").classList.remove("hidden");
+ game.running=true;game.paused=false;game.t=0;game.world=0;game.speed=0;game.fuel=100;game.damage=0;game.spawn=0;
+ toast("CHASE STARTED");
+}
+function pauseGame(){if(!game.running)return;game.paused=!game.paused;toast(game.paused?"PAUSED":"RESUMED")}
+function gainXP(n){
+ save.xp+=n;let need=save.level*500;
+ if(save.xp>=need){save.xp-=need;save.level++;toast("LEVEL UP: "+save.level)}
+ persist()
+}
+function upgrade(k,cost){
+ if(save.money<cost)return toast("Not enough money");
+ save.money-=cost;save.upgrades[k]++;persist();renderGarage();toast(k.toUpperCase()+" UPGRADED")
+}
+function renderGarage(){
+ const names={engine:"Engine",armor:"Storm Armor",sensor:"Sensor Array",film:"Camera"};
+ const costs={engine:300,armor:350,sensor:400,film:300};
+ document.getElementById("garageCards").innerHTML=Object.keys(names).map(k=>{
+ let lv=save.upgrades[k],cost=costs[k]*(lv+1);
+ return `<div class="card"><b>${names[k]}</b><p>Level ${lv}</p><div class="bar"><div class="fill" style="width:${Math.min(100,20+lv*20)}%"></div></div><button onclick="upgrade('${k}',${cost})">UPGRADE $${cost}</button></div>`
+ }).join("");
+}
+function progress(key){return save.completed[key]||0}
+function renderMissions(){
+ document.getElementById("missionList").innerHTML=missions.map(m=>{
+ let done=progress(m[3])>=m[2],claimed=save.ach["M:"+m[0]];
+ return `<div class="card"><b>${m[0]}</b><p>${progress(m[3])}/${m[2]} • Reward $${m[4]}</p><button ${!done||claimed?"disabled":""} onclick="claimMission('${m[0]}',${m[4]})">${claimed?"CLAIMED":done?"CLAIM":"IN PROGRESS"}</button></div>`
+ }).join("");
+}
+function claimMission(n,r){save.ach["M:"+n]=1;save.money+=r;gainXP(Math.round(r/2));renderMissions();toast("MISSION COMPLETE +$"+r)}
+function renderAchievements(){
+ document.getElementById("achievementList").innerHTML=achievements.map(a=>{
+ let v=a[2]==="level"?save.level:progress(a[2]),done=v>=a[3],key="A:"+a[0];
+ return `<div class="card"><b>${a[0]}</b><p>${a[1]} • ${Math.min(v,a[3])}/${a[3]}</p><button ${!done||save.ach[key]?"disabled":""} onclick="claimAch('${key}',${a[4]})">${save.ach[key]?"UNLOCKED":done?"UNLOCK":"LOCKED"}</button></div>`
+ }).join("");
+}
+function claimAch(k,r){save.ach[k]=1;save.money+=r;gainXP(r);renderAchievements();toast("ACHIEVEMENT +$"+r)}
+
+let trees=[],buildings=[],clouds=[];
+function seedWorld(){
+ trees=[];buildings=[];clouds=[];
+ for(let i=0;i<180;i++)trees.push({x:i*190+Math.random()*150,h:35+Math.random()*55});
+ for(let i=0;i<45;i++)buildings.push({x:i*700+300,w:70+Math.random()*90,h:35+Math.random()*80});
+ for(let i=0;i<35;i++)clouds.push({x:i*800+Math.random()*400,y:50+Math.random()*180,s:.5+Math.random()*.9});
+}
+seedWorld();
+
+function stormX(){return 3600+Math.sin(game.t*.07)*900+Math.sin(game.t*.013)*1700}
+function update(dt){
+ if(!game.running||game.paused)return;
+ game.t+=dt;
+ let boost=save.upgrades.engine*.55;
+ if(keys.up){game.speed+=dt*(90+boost*30)}
+ if(keys.down){game.speed-=dt*130}
+ if(keys.stop){game.speed-=dt*260}
+ game.speed=Math.max(-110,Math.min(360+boost*35,game.speed));
+ game.world+=game.speed*dt;
+ if(game.speed>0)save.completed.distance=Math.max(save.completed.distance,Math.floor(game.world/10));
+ game.fuel=Math.max(0,game.fuel-Math.max(0,game.speed)*dt*.003*(1-save.upgrades.engine*.07));
+ if(game.fuel<=0)game.speed=Math.min(game.speed,0);
+ let sx=stormX(),dist=Math.abs(sx-game.world);
+ game.storm=Math.max(0,1-Math.min(1,dist/1800));
+ game.wind=game.storm*(35+game.weather*45);
+ game.weather=.5+.5*Math.sin(game.t*.018);
+ game.spawn+=dt;
+ if(game.speed>280&&game.storm>.65)game.damage=Math.min(100,game.damage+dt*(game.storm*.9));
+ game.damage=Math.max(0,game.damage-dt*.2);
+ if(game.t%12<dt&&game.storm>.35)save.completed.tornadoes=Math.max(save.completed.tornadoes,Math.floor(game.world/900));
+ if(game.world>0&&Math.floor(game.world)%1000<5)gainXP(5);
+ persist();
+}
+function draw(){
+ ctx.clearRect(0,0,W,H);
+ let storm=Math.max(0,game.storm),sky=game.weather;
+ let g=ctx.createLinearGradient(0,0,0,H);g.addColorStop(0,`rgb(${35-25*storm},${75-45*storm},${105-45*storm})`);g.addColorStop(1,`rgb(${125-65*storm},${150-70*storm},${150-60*storm})`);ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+ // distant clouds
+ clouds.forEach(c=>{let x=((c.x-game.world*.08)%(W+300)+W+300)%(W+300)-150;ctx.fillStyle=`rgba(20,28,38,${.35+storm*.4})`;ctx.beginPath();ctx.ellipse(x,c.y,90*c.s,28*c.s,0,0,Math.PI*2);ctx.fill();ctx.beginPath();ctx.ellipse(x+45*c.s,c.y-12,65*c.s,25*c.s,0,0,Math.PI*2);ctx.fill()});
+ // lightning
+ if(storm>.75&&Math.random()<.012){ctx.fillStyle="rgba(235,245,255,.75)";ctx.fillRect(0,0,W,H)}
+ // ground
+ let horizon=H*.62;ctx.fillStyle="#53634f";ctx.fillRect(0,horizon,W,H-horizon);
+ ctx.fillStyle="#273039";ctx.fillRect(0,H*.76,W,H*.24);
+ ctx.fillStyle="#c4a866";for(let x=((-game.world*.9)%80)-80;x<W+80;x+=80)ctx.fillRect(x,H*.865,42,5);
+ // scenery
+ const base=game.world*.9;
+ buildings.forEach(b=>{let x=((b.x-base)%(W+900)+W+900)%(W+900)-450;if(x>-150&&x<W+150){ctx.fillStyle="#6c716f";ctx.fillRect(x,horizon-b.h,b.w,b.h);ctx.fillStyle="#31383e";for(let q=8;q<b.w-8;q+=25)ctx.fillRect(x+q,horizon-b.h+12,12,12)}});
+ trees.forEach(t=>{let x=((t.x-base)%(W+900)+W+900)%(W+900)-450;if(x>-100&&x<W+100){let y=horizon;ctx.strokeStyle="#3d3028";ctx.lineWidth=7;ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x,y-t.h);ctx.stroke();ctx.fillStyle="#263e31";ctx.beginPath();ctx.arc(x,y-t.h,20,0,7);ctx.fill();ctx.beginPath();ctx.arc(x-15,y-t.h+10,17,0,7);ctx.fill();ctx.beginPath();ctx.arc(x+15,y-t.h+12,18,0,7);ctx.fill()}});
+ // tornado
+ let sx=((stormX()-game.world)%(W+1800)+W+1800)%(W+1800)-900;
+ if(storm>.18){let tx=sx,ty=horizon-15,tw=55+storm*85;ctx.save();ctx.translate(tx,ty);ctx.rotate(Math.sin(game.t*1.4)*.04);
+  for(let i=0;i<8;i++){let y=-i*34,ww=tw*(.2+i/9);ctx.fillStyle=`rgba(45,50,53,${.22+storm*.05})`;ctx.beginPath();ctx.ellipse((i%2?8:-5),y,ww,28,0,0,7);ctx.fill()}
+  ctx.fillStyle="rgba(35,38,40,.75)";ctx.beginPath();ctx.moveTo(-18,0);ctx.lineTo(-tw,-260);ctx.lineTo(tw,-260);ctx.lineTo(18,0);ctx.closePath();ctx.fill();ctx.restore();
+ }
+ // vehicle
+ let vx=W*.24,vy=H*.76-18;ctx.save();ctx.translate(vx,vy);
+ ctx.fillStyle="#111820";ctx.fillRect(-55,-28,115,30);ctx.fillStyle="#8798a5";ctx.fillRect(-30,-48,55,22);ctx.fillStyle="#263746";ctx.fillRect(-24,-44,20,15);ctx.fillRect(2,-44,18,15);ctx.fillStyle="#0a0d10";ctx.beginPath();ctx.arc(-35,3,14,0,7);ctx.arc(45,3,14,0,7);ctx.fill();ctx.restore();
+ // wind
+ if(game.wind>10){ctx.strokeStyle="rgba(220,235,245,.22)";for(let i=0;i<10;i++){let y=100+i*45;ctx.beginPath();ctx.moveTo(W*.55,y);ctx.lineTo(W*.55+game.wind*1.5,y-10);ctx.stroke()}}
+ // rain
+ if(game.rain&&storm>.25){ctx.strokeStyle="rgba(190,215,235,.3)";for(let i=0;i<90;i++){let x=(i*83+game.t*game.speed*1.5)%W,y=(i*47+game.t*600)%H;ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x-5,y+16);ctx.stroke()}}
+ updateHUD();
+ if(game.photoFlash>0){ctx.fillStyle="rgba(255,255,255,"+game.photoFlash+")";ctx.fillRect(0,0,W,H);game.photoFlash-=.05}
+ if(game.radar)drawRadar();
+}
+function updateHUD(){
+ document.getElementById("stats").innerHTML=`$${save.money} • LV ${save.level} • ${Math.max(0,Math.round(game.speed))} km/h<br>Fuel ${Math.round(game.fuel)}% • Damage ${Math.round(game.damage)}%`;
+ let d=Math.round(Math.abs(stormX()-game.world));document.getElementById("objective").innerHTML=`STORM ${Math.round(game.storm*100)}% • ${d}m away`;
+}
+function drawRadar(){
+ radar.classList.remove("hidden");rx.clearRect(0,0,150,150);rx.fillStyle="#061016";rx.fillRect(0,0,150,150);
+ rx.strokeStyle="#718999";rx.lineWidth=1;rx.beginPath();rx.arc(75,75,65,0,7);rx.stroke();rx.beginPath();rx.moveTo(10,75);rx.lineTo(140,75);rx.moveTo(75,10);rx.lineTo(75,140);rx.stroke();
+ let rel=(stormX()-game.world)/900*65;rx.fillStyle="#dcebf4";rx.beginPath();rx.arc(75+Math.max(-60,Math.min(60,rel)),75,6,0,7);rx.fill();
+ rx.fillStyle="#8799a7";rx.font="11px Arial";rx.fillText("N",72,18);rx.fillText("STORM",53,143)
+}
+function toggleRadar(){game.radar=!game.radar;if(!game.radar)radar.classList.add("hidden")}
+function photoMode(){
+ if(!game.running)return;
+ let d=Math.abs(stormX()-game.world);
+ if(d<900&&game.storm>.35){
+  let reward=Math.round(100+game.storm*300)*(1+save.upgrades.film);
+  save.money+=reward;save.completed.photos++;save.completed.tornadoes=Math.max(save.completed.tornadoes,Math.floor(save.completed.photos));
+  gainXP(120);game.photoFlash=.8;persist();toast("PHOTO CAPTURED +$"+reward);
+ }else toast("Move closer to the storm to capture evidence");
+}
+function deploySensor(){
+ if(!game.running||game.paused)return;
+ if(game.storm>.2){save.money+=50;save.completed.sensors++;gainXP(35);persist();toast("SENSOR DEPLOYED +$50")}
+ else toast("No storm signal here");
+}
+function toggleRain(){game.rain=!game.rain;toast(game.rain?"RAIN ON":"RAIN OFF")}
+function resetSave(){if(confirm("Reset all local progress?")){localStorage.removeItem(KEY);location.reload()}}
+const keys={up:false,down:false,stop:false};
+addEventListener("keydown",e=>{
+ if(["ArrowUp","ArrowDown"," ","w","W","s","S"].includes(e.key))e.preventDefault();
+ if(e.key==="ArrowUp"||e.key==="w"||e.key==="W")keys.up=true;
+ if(e.key==="ArrowDown"||e.key==="s"||e.key==="S")keys.down=true;
+ if(e.key===" ")keys.stop=true;
+});
+addEventListener("keyup",e=>{
+ if(e.key==="ArrowUp"||e.key==="w"||e.key==="W")keys.up=false;
+ if(e.key==="ArrowDown"||e.key==="s"||e.key==="S")keys.down=false;
+ if(e.key===" ")keys.stop=false;
+});
+function bindHold(id,key){let e=document.getElementById(id);e.addEventListener("pointerdown",()=>keys[key]=true);["pointerup","pointercancel","pointerleave"].forEach(x=>e.addEventListener(x,()=>keys[key]=false))}
+bindHold("accelerate","up");bindHold("brake","down");bindHold("stop","stop");
+document.getElementById("sensor").onclick=deploySensor;
+
+let last=performance.now();
+function loop(now){let dt=Math.min(.033,(now-last)/1000);last=now;update(dt);draw();requestAnimationFrame(loop)}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
